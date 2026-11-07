@@ -1,0 +1,12 @@
+# 系统文件
+.DS_Store
+
+# 原始照片：体积大且含隐私信息，默认不进仓库
+# 网站使用的是 tools/build_images.py 生成的 assets/images/ 优化图
+myPhotos/
+
+# 依赖与编辑器
+node_modules/
+.vscode/
+.idea/
+*.log
