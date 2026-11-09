@@ -1259,6 +1259,45 @@ body.is-locked { overflow: hidden; }
 @keyframes discSpin { to { transform: rotate(1turn); } }
 @keyframes ringSpin { from { transform: rotate(0); } to { transform: rotate(-1turn); } }
 
+/* 自动播放被拦截时的小提示 */
+.music-hint {
+  position: fixed;
+  z-index: 70;
+  top: calc(env(safe-area-inset-top, 0px) + 66px);
+  right: 16px;
+  padding: 6px 10px;
+  border-radius: 99px;
+  background: rgba(26, 30, 30, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-4px);
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.35s var(--ease), transform 0.35s var(--ease), visibility 0.35s;
+}
+
+@media (min-width: 700px) {
+  .music-hint { right: max(16px, calc(50% - 215px + 16px)); }
+}
+
+.music-hint.is-show {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+}
+
+.music-hint::before {
+  content: "♪";
+  margin-right: 5px;
+  color: #F3CE96;
+}
+
 /* =========================================================
    右侧悬浮导航
    ========================================================= */

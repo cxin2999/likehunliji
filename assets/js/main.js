@@ -11,6 +11,24 @@
 
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /* ---------------------------------------------------------
+     自动下滑默认配置
+     speed  : 像素/秒（平均速度，只在这里配置）
+     delay  : 封面停留多久后开始，毫秒
+     resume : 被打断后多久继续，毫秒
+     --------------------------------------------------------- */
+  var AUTO_SCROLL = {
+    enabled: true,
+    speed: 60,      // 平均速度：像素/秒（只在这里配置）
+    delay: 2600,    // 封面停留：毫秒
+    resume: 2000    // 被打断后多久继续：毫秒
+  };
+
+  /* 打开页面后是否尝试自动播放音乐；关闭后仍可用右上角按钮手动播放 */
+  var AUTO_MUSIC = {
+    enabled: true
+  };
+
   function $(selector, scope) {
     return (scope || doc).querySelector(selector);
   }
@@ -33,6 +51,8 @@
   var coverImg = $('.cover__media img');
   var startAt = (window.performance && performance.now) ? performance.now() : Date.now();
 
+  var readyDispatched = false;
+
   function doneLoading() {
     if (!loader || loader.classList.contains('is-done')) return;
     var now = (window.performance && performance.now) ? performance.now() : Date.now();
@@ -41,6 +61,18 @@
     window.setTimeout(function () {
       loader.classList.add('is-done');
       body.classList.add('is-ready');
+
+      if (!readyDispatched) {
+        readyDispatched = true;
+        var readyEvent;
+        try {
+          readyEvent = new CustomEvent('wedding:ready');
+        } catch (error) {
+          readyEvent = doc.createEvent('Event');
+          readyEvent.initEvent('wedding:ready', true, true);
+        }
+        doc.dispatchEvent(readyEvent);
+      }
     }, wait);
   }
 
@@ -347,7 +379,24 @@
   var musicBtn = $('[data-music]');
   var musicToggle = $('[data-music-toggle]');
   var musicState = $('[data-music-state]');
+  var musicHint = $('[data-music-hint]');
+  var musicHintTimer = null;
   var pendingResume = false;
+
+  function showMusicHint() {
+    if (!musicHint) return;
+    musicHint.classList.add('is-show');
+    window.clearTimeout(musicHintTimer);
+    musicHintTimer = window.setTimeout(function () {
+      musicHint.classList.remove('is-show');
+    }, 6000);
+  }
+
+  function hideMusicHint() {
+    if (!musicHint) return;
+    window.clearTimeout(musicHintTimer);
+    musicHint.classList.remove('is-show');
+  }
 
   var toast = $('[data-toast]');
   var toastTimer = null;
@@ -379,6 +428,77 @@
   if (audio) {
     audio.volume = 0.48;
 
+    /* -------------------------------------------------------
+       自动播放：先尝试直接播；被浏览器策略拦截时，
+       在首次点击 / 触摸 / 按键 / 滚轮时补播一次。
+       ------------------------------------------------------- */
+    var autoplayAttempted = false;
+    var unlockArmed = false;
+    var unlockListeners = [];
+
+    var clearUnlock = function () {
+      unlockListeners.forEach(function (entry) {
+        document.removeEventListener(entry[0], entry[1], entry[2]);
+      });
+      unlockListeners = [];
+      unlockArmed = false;
+    };
+
+    var armUnlock = function () {
+      if (unlockArmed) return;
+      unlockArmed = true;
+
+      var unlock = function (event) {
+        if (event && event.target && event.target.closest &&
+            event.target.closest('[data-music], [data-music-toggle]')) {
+          return;
+        }
+        var result = audio.play();
+        if (result && typeof result.catch === 'function') {
+          result.catch(function () {});
+        }
+      };
+
+      var events = [
+        ['pointerdown', { capture: true }],
+        ['touchstart', { capture: true, passive: true }],
+        ['keydown', { capture: true }],
+        ['wheel', { capture: true, passive: true }]
+      ];
+
+      events.forEach(function (entry) {
+        var options = Object.assign({ once: true }, entry[1]);
+        document.addEventListener(entry[0], unlock, options);
+        unlockListeners.push([entry[0], unlock, options]);
+      });
+    };
+
+    var tryAutoplay = function () {
+      if (!audio.paused || autoplayAttempted) return;
+      autoplayAttempted = true;
+
+      var result = audio.play();
+      if (result && typeof result.catch === 'function') {
+        result.catch(function () {
+          armUnlock();
+          showMusicHint();
+        });
+      } else if (audio.paused) {
+        armUnlock();
+      }
+    };
+
+    audio.addEventListener('playing', clearUnlock);
+
+    if (AUTO_MUSIC.enabled) {
+      doc.addEventListener('wedding:ready', function () {
+        window.setTimeout(tryAutoplay, 350);
+      }, { once: true });
+
+      /* 首屏还没 ready 时用户就交互，也允许提前开始 */
+      armUnlock();
+    }
+
     var tryPlay = function () {
       var result = audio.play();
       if (result && typeof result.then === 'function') {
@@ -408,7 +528,10 @@
       });
     }
 
-    audio.addEventListener('play', function () { setMusicUI(true); });
+    audio.addEventListener('play', function () {
+      setMusicUI(true);
+      hideMusicHint();
+    });
     audio.addEventListener('pause', function () { setMusicUI(false); });
     audio.addEventListener('error', function () {
       setMusicUI(false);
@@ -500,6 +623,7 @@
     if (typeof sheet.showModal === 'function') {
       sheet.showModal();
       lockBody();
+      syncAutoScroll();
       var sheetTitle = $('.sheet__title', sheet);
       if (sheetTitle) sheetTitle.focus();
     }
@@ -523,9 +647,15 @@
     sheet.addEventListener('click', function (event) {
       if (event.target === sheet) closeSheet();
     });
-    sheet.addEventListener('close', unlockBody);
+    sheet.addEventListener('close', function () {
+      unlockBody();
+      syncAutoScroll();
+    });
     sheet.addEventListener('cancel', function () {
-      window.setTimeout(unlockBody, 0);
+      window.setTimeout(function () {
+        unlockBody();
+        syncAutoScroll();
+      }, 0);
     });
   }
 
@@ -560,6 +690,7 @@
     if (typeof lightbox.showModal === 'function') {
       lightbox.showModal();
       lockBody();
+      syncAutoScroll();
     }
   }
 
@@ -588,9 +719,15 @@
     if (prevPhoto) prevPhoto.addEventListener('click', function () { stepPhoto(-1); });
     if (nextPhoto) nextPhoto.addEventListener('click', function () { stepPhoto(1); });
 
-    lightbox.addEventListener('close', unlockBody);
+    lightbox.addEventListener('close', function () {
+      unlockBody();
+      syncAutoScroll();
+    });
     lightbox.addEventListener('cancel', function () {
-      window.setTimeout(unlockBody, 0);
+      window.setTimeout(function () {
+        unlockBody();
+        syncAutoScroll();
+      }, 0);
     });
 
     lightbox.addEventListener('click', function (event) {
@@ -632,7 +769,171 @@
   }
 
   /* ---------------------------------------------------------
-     9. 分享
+     9. 自动下滑
+     无任何界面：手动滚动 / 打开面板 / 切后台暂停，
+     打断结束后 2 秒自动继续，不弹提示。
+     速度只改顶部 AUTO_SCROLL.speed。
+     --------------------------------------------------------- */
+  var autoScroll = {
+    enabled: AUTO_SCROLL.enabled,
+    speed: AUTO_SCROLL.speed,
+    ready: false,
+    active: false,
+    raf: null,
+    timer: null,
+    y: 0,
+    last: 0
+  };
+
+  /* 系统开启“减弱动效”时不自动滚动 */
+  if (reduceMotion) autoScroll.enabled = false;
+
+  function clearAutoTimer() {
+    if (autoScroll.timer) {
+      window.clearTimeout(autoScroll.timer);
+      autoScroll.timer = null;
+    }
+  }
+
+  function maxScrollTop() {
+    return Math.max(0, doc.documentElement.scrollHeight - window.innerHeight);
+  }
+
+  function autoBlocked() {
+    return doc.hidden || (sheet && sheet.open) || (lightbox && lightbox.open);
+  }
+
+  function stopAutoScroll() {
+    if (autoScroll.raf) {
+      window.cancelAnimationFrame(autoScroll.raf);
+      autoScroll.raf = null;
+    }
+    if (autoScroll.active) {
+      autoScroll.active = false;
+      doc.documentElement.style.scrollBehavior = '';
+    }
+  }
+
+  function finishAutoScroll() {
+    autoScroll.raf = null;
+    autoScroll.active = false;
+    autoScroll.enabled = false;
+    doc.documentElement.style.scrollBehavior = '';
+    clearAutoTimer();
+  }
+
+  function autoScrollFrame(now) {
+    if (!autoScroll.active) return;
+
+    if (!autoScroll.last) autoScroll.last = now;
+    var delta = Math.min(now - autoScroll.last, 100);
+    autoScroll.last = now;
+
+    if (autoBlocked()) {
+      stopAutoScroll();
+      return;
+    }
+
+    var actual = window.scrollY;
+    if (Math.abs(actual - autoScroll.y) > 14) autoScroll.y = actual;
+
+    var limit = maxScrollTop();
+    autoScroll.y += autoScroll.speed * delta / 1000;
+
+    if (autoScroll.y >= limit) {
+      window.scrollTo(0, limit);
+      finishAutoScroll();
+      return;
+    }
+
+    window.scrollTo(0, autoScroll.y);
+    autoScroll.raf = window.requestAnimationFrame(autoScrollFrame);
+  }
+
+  function startAutoScroll() {
+    clearAutoTimer();
+    if (!autoScroll.enabled || !autoScroll.ready || autoScroll.active || autoBlocked()) {
+      return;
+    }
+
+    var limit = maxScrollTop();
+    if (window.scrollY >= limit - 2) window.scrollTo(0, 0);
+
+    autoScroll.active = true;
+    autoScroll.last = 0;
+    autoScroll.y = window.scrollY;
+    doc.documentElement.style.scrollBehavior = 'auto';
+    autoScroll.raf = window.requestAnimationFrame(autoScrollFrame);
+  }
+
+  function scheduleAutoStart(delay) {
+    clearAutoTimer();
+    if (!autoScroll.enabled || !autoScroll.ready || autoBlocked()) return;
+
+    autoScroll.timer = window.setTimeout(function () {
+      autoScroll.timer = null;
+      startAutoScroll();
+    }, Math.max(0, delay));
+  }
+
+  /* 手动滚动等打断：暂停，2 秒后自动继续 */
+  function interruptAutoScroll() {
+    if (!autoScroll.enabled) return;
+    clearAutoTimer();
+    stopAutoScroll();
+    scheduleAutoStart(AUTO_SCROLL.resume);
+  }
+
+  /* 面板 / 灯箱 / 后台切换：先暂停，恢复后再等 2 秒 */
+  function syncAutoScroll() {
+    if (autoBlocked()) {
+      clearAutoTimer();
+      stopAutoScroll();
+      return;
+    }
+
+    if (autoScroll.enabled && autoScroll.ready) {
+      scheduleAutoStart(AUTO_SCROLL.resume);
+    }
+  }
+
+  doc.addEventListener('wedding:ready', function () {
+    autoScroll.ready = true;
+    if (autoScroll.enabled) scheduleAutoStart(AUTO_SCROLL.delay);
+  }, { once: true });
+
+  doc.addEventListener('visibilitychange', function () {
+    syncAutoScroll();
+  });
+
+  window.addEventListener('resize', function () {
+    if (autoScroll.active) autoScroll.y = window.scrollY;
+  });
+
+  window.addEventListener('wheel', function () {
+    if (autoBlocked()) return;
+    interruptAutoScroll();
+  }, { passive: true });
+
+  window.addEventListener('touchmove', function () {
+    if (autoBlocked()) return;
+    interruptAutoScroll();
+  }, { passive: true });
+
+  window.addEventListener('keydown', function (event) {
+    if (autoBlocked()) return;
+    if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].indexOf(event.key) === -1) {
+      return;
+    }
+    if (event.target && event.target.closest &&
+        event.target.closest('button, a, input, textarea, select')) {
+      return;
+    }
+    interruptAutoScroll();
+  });
+
+  /* ---------------------------------------------------------
+     10. 分享
      --------------------------------------------------------- */
   var shareButtons = $$('[data-share]');
 
@@ -691,7 +992,7 @@
   });
 
   /* ---------------------------------------------------------
-     10. 杂项
+     11. 杂项
      --------------------------------------------------------- */
   /* 面板里的锚点：先关闭，再交给浏览器跳转 */
   $$('.sheet a[href^="#"]').forEach(function (link) {
